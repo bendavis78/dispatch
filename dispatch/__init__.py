@@ -1,6 +1,6 @@
 """Multi-consumer multi-producer dispatching mechanism"""
 
-from dispatch.dispatcher import Signal
+from dispatch.dispatcher import Signal, receiver
 
 VERSION = (3, 0, 0)
 

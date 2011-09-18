@@ -1,8 +1,5 @@
 import weakref
-try:
-    set
-except NameError:
-    from sets import Set as set # Python 2.3 fallback
+import threading
 
 from dispatch import saferef
 
@@ -34,6 +31,7 @@ class Signal(object):
         if providing_args is None:
             providing_args = []
         self.providing_args = set(providing_args)
+        self.lock = threading.Lock()
 
     def connect(self, receiver, sender=None, weak=True, dispatch_uid=None):
         """
@@ -78,11 +76,15 @@ class Signal(object):
         if weak:
             receiver = saferef.safeRef(receiver, onDelete=self._remove_receiver)
 
-        for r_key, _ in self.receivers:
-            if r_key == lookup_key:
-                break
-        else:
-            self.receivers.append((lookup_key, receiver))
+        self.lock.acquire()
+        try:
+            for r_key, _ in self.receivers:
+                if r_key == lookup_key:
+                    break
+            else:
+                self.receivers.append((lookup_key, receiver))
+        finally:
+            self.lock.release()
 
     def disconnect(self, receiver=None, sender=None, weak=True, dispatch_uid=None):
         """
@@ -110,12 +112,16 @@ class Signal(object):
             lookup_key = (dispatch_uid, _make_id(sender))
         else:
             lookup_key = (_make_id(receiver), _make_id(sender))
-
-        for index in xrange(len(self.receivers)):
-            (r_key, _) = self.receivers[index]
-            if r_key == lookup_key:
-                del self.receivers[index]
-                break
+        
+        self.lock.acquire()
+        try:
+            for index in xrange(len(self.receivers)):
+                (r_key, _) = self.receivers[index]
+                if r_key == lookup_key:
+                    del self.receivers[index]
+                    break
+        finally:
+            self.lock.release()
 
     def send(self, sender, **named):
         """
@@ -151,7 +157,7 @@ class Signal(object):
         Arguments:
 
             sender
-                The sender of the signal Can be any python object (normally one
+                The sender of the signal. Can be any python object (normally one
                 registered with a connect if you actually want something to
                 occur).
 
@@ -163,7 +169,7 @@ class Signal(object):
         Return a list of tuple pairs [(receiver, response), ... ]. May raise
         DispatcherKeyError.
 
-        if any receiver raises an error (specifically any subclass of
+        If any receiver raises an error (specifically any subclass of
         Exception), the error instance is returned as the result for that
         receiver.
         """
@@ -208,11 +214,34 @@ class Signal(object):
         Remove dead receivers from connections.
         """
 
-        to_remove = []
-        for key, connected_receiver in self.receivers:
-            if connected_receiver == receiver:
-                to_remove.append(key)
-        for key in to_remove:
-            for idx, (r_key, _) in enumerate(self.receivers):
-                if r_key == key:
-                    del self.receivers[idx]
+        self.lock.acquire()
+        try:
+            to_remove = []
+            for key, connected_receiver in self.receivers:
+                if connected_receiver == receiver:
+                    to_remove.append(key)
+            for key in to_remove:
+                last_idx = len(self.receivers) - 1
+                # enumerate in reverse order so that indexes are valid even
+                # after we delete some items
+                for idx, (r_key, _) in enumerate(reversed(self.receivers)):
+                    if r_key == key:
+                        del self.receivers[last_idx-idx]
+        finally:
+            self.lock.release()
+
+
+def receiver(signal, **kwargs):
+    """
+    A decorator for connecting receivers to signals. Used by passing in the
+    signal and keyword arguments to connect::
+
+        @receiver(post_save, sender=MyModel)
+        def signal_receiver(sender, **kwargs):
+            ...
+
+    """
+    def _decorator(func):
+        signal.connect(func, **kwargs)
+        return func
+    return _decorator
